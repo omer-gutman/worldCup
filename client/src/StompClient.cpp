@@ -10,6 +10,7 @@
 #include <chrono> //short break to lower the cpu usage
 #include "ConnectionHandler.h"
 
+//inorder to sync everything all of these global vars were used - thread safe
 std::atomic<bool> shouldTerminate(false);// flag
 std::mutex receiptMutex; // lock
 std::map<int, std::string> receiptMap;// log for all the receipts
@@ -19,7 +20,7 @@ std::mutex inputMutex;//locking the queue
 int receiptCounter = 0;
 int subscriptionIdCounter = 0;
 
-
+//stomp proctocl functions used to build the frames properly and refactor the code
 //sends a subscribe frame
 void sendJoin(ConnectionHandler* handler, const std::string& destination) {
     int rId, sId;
@@ -103,6 +104,7 @@ void processMessage(const std::string& headersPart, const std::string& bodyPart,
     }
 }
 
+//parsing everyhing is it error or is it a receipt only the listener knows
 void runListener(ConnectionHandler* handler) {//the listener thread
     while (!shouldTerminate) {
         std::string response;
@@ -140,6 +142,7 @@ void runListener(ConnectionHandler* handler) {//the listener thread
     }
 }
 
+// simple get line can block  making input a different thread solved the being blocked problem
 void readFromCin() {//reading in a non blocking way
     while (!shouldTerminate) {
         std::string line;
@@ -207,7 +210,7 @@ int main(int argc, char *argv[]) {
             std::cout << "You must login first" << std::endl;
         }
     }
-	
+	//the engine syncing 3 threads, running STOMP protocol, state managment and dealing with blocking I/Os
 	while (!shouldTerminate) {//after successfully login in 
         std::string line = "";
 		//checking for message in queue
