@@ -10,10 +10,15 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<StompF
     private int connectionId;
     private Connections<StompFrame> connections;
     private boolean shouldTerminate = false;
+    private UserController userController;
+    private String currentUser = null; 
     
-    // מיפוי בין Subscription ID (שהלקוח שלח) לבין שם הערוץ (Topic)
-    // מפתח: ID, ערך: Channel Name
     private Map<String, String> subscriptionIdToChannel = new HashMap<>();
+
+    public StompMessagingProtocolImpl(Connections<StompFrame> connections, UserController userController) {
+        this.connections = connections;
+        this.userController = userController;
+    }
 
     @Override
     public void start(int connectionId, Connections<StompFrame> connections) {
@@ -22,8 +27,13 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<StompF
     }
 
     @Override
-    public void process(StompFrame message) {
+    public StompFrame process(StompFrame message) {
         String command = message.getCommand();
+
+        if (currentUser == null && !command.equals("CONNECT")) {
+            sendErrorAndClose("User not logged in", "You must log in first.", message);
+            return null;
+        }
 
         switch (command) {
             case "CONNECT":
@@ -42,9 +52,12 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<StompF
                 handleDisconnect(message);
                 break;
             default:
-                // ניתן להוסיף טיפול בשגיאה על פקודה לא מוכרת או להתעלם
+                sendErrorAndClose("Unknown Command", "The command " + command + " is not recognized.", message);
                 break;
         }
+        
+        // אנחנו מחזירים null כי התשובות נשלחות ישירות דרך ה-connections ולא דרך מנגנון החזרה של ה-Handler
+        return null;
     }
 
     @Override
@@ -55,9 +68,38 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<StompF
     // --- Private Handler Methods ---
 
     private void handleConnect(StompFrame message) {
-        // בגרסה הסופית נבדוק כאן שם משתמש וסיסמה
         String login = message.getHeaders().get("login");
         String passcode = message.getHeaders().get("passcode");
+
+        if (login == null || passcode == null) {
+            sendErrorAndClose("Malformed Frame", "Login and passcode headers are required", message);
+            return;
+        }
+
+        if (currentUser != null) {
+            sendErrorAndClose("User already logged in", "Client is already logged in as " + currentUser, message);
+            return;
+        }
+
+        synchronized (userController) {
+            if (userController.isLoggedIn(login)) {
+                sendErrorAndClose("User already logged in", "User " + login + " is already active on another client.", message);
+                return;
+            }
+
+            if (!userController.isUserRegistered(login)) {
+                userController.register(login, passcode);
+            } else {
+                if (!userController.isValidLogin(login, passcode)) {
+                    sendErrorAndClose("Wrong password", "Password does not match.", message);
+                    return;
+                }
+            }
+            
+            userController.login(login);
+        }
+
+        this.currentUser = login;
 
         StompFrame connected = new StompFrame("CONNECTED");
         connected.addHeader("version", "1.2");
@@ -68,15 +110,14 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<StompF
         String destination = message.getHeaders().get("destination");
         String id = message.getHeaders().get("id");
 
-        if (destination != null && id != null) {
-            // 1. שמירת המיפוי אצלנו בפרוטוקול כדי שנוכל לבטל אח"כ
-            subscriptionIdToChannel.put(id, destination);
-            
-            // 2. רישום הלקוח ב-Connections הראשי
-            connections.subscribe(destination, connectionId);
+        if (destination == null || id == null) {
+            sendErrorAndClose("Malformed Frame", "SUBSCRIBE requires 'destination' and 'id' headers.", message);
+            return;
         }
 
-        // שליחת אישור (Receipt) אם התבקש
+        subscriptionIdToChannel.put(id, destination);
+        connections.subscribe(destination, connectionId, id);
+
         if (message.getHeaders().containsKey("receipt")) {
             sendReceipt(message.getHeaders().get("receipt"));
         }
@@ -84,12 +125,13 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<StompF
 
     private void handleUnsubscribe(StompFrame message) {
         String id = message.getHeaders().get("id");
-        
-        // שליפת הערוץ המתאים ל-ID הזה
+        if (id == null) {
+            sendErrorAndClose("Malformed Frame", "UNSUBSCRIBE requires 'id' header.", message);
+            return;
+        }
+
         String destination = subscriptionIdToChannel.remove(id);
-        
         if (destination != null) {
-            // ביטול הרישום ב-Connections
             connections.unsubscribe(destination, connectionId);
         }
 
@@ -100,18 +142,22 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<StompF
 
     private void handleSend(StompFrame message) {
         String destination = message.getHeaders().get("destination");
-        
-        if (destination != null) {
-            // יצירת הודעת MESSAGE שתשלח לכל המנויים
-            StompFrame msgToSend = new StompFrame("MESSAGE");
-            msgToSend.addHeader("destination", destination);
-            msgToSend.addHeader("message-id", "msg-" + System.currentTimeMillis()); // ID ייחודי
-            // שים לב: header 'subscription' צריך להתווסף דינמית לכל לקוח שמקבל את ההודעה.
-            // כרגע נשלח את הגוף כמו שהוא
-            msgToSend.setBody(message.getBody());
-
-            connections.send(destination, msgToSend);
+        if (destination == null) {
+            sendErrorAndClose("Malformed Frame", "SEND requires 'destination' header.", message);
+            return;
         }
+
+        if (!subscriptionIdToChannel.containsValue(destination)) {
+            sendErrorAndClose("Not Subscribed", "You cannot send messages to a channel you are not subscribed to.", message);
+            return;
+        }
+
+        StompFrame msgToSend = new StompFrame("MESSAGE");
+        msgToSend.addHeader("destination", destination);
+        msgToSend.addHeader("message-id", "msg-" + System.currentTimeMillis()); 
+        msgToSend.setBody(message.getBody());
+
+        connections.send(destination, msgToSend);
 
         if (message.getHeaders().containsKey("receipt")) {
             sendReceipt(message.getHeaders().get("receipt"));
@@ -119,12 +165,14 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<StompF
     }
 
     private void handleDisconnect(StompFrame message) {
-        // קודם שולחים אישור אם צריך
         if (message.getHeaders().containsKey("receipt")) {
             sendReceipt(message.getHeaders().get("receipt"));
         }
         
-        // ואז מסמנים לסגירה ומנתקים
+        if (currentUser != null) {
+            userController.logout(currentUser);
+        }
+        
         shouldTerminate = true;
         connections.disconnect(connectionId);
     }
@@ -133,5 +181,21 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<StompF
         StompFrame receipt = new StompFrame("RECEIPT");
         receipt.addHeader("receipt-id", receiptId);
         connections.send(connectionId, receipt);
+    }
+
+    private void sendErrorAndClose(String messageHeader, String bodyDetail, StompFrame causingMessage) {
+        StompFrame error = new StompFrame("ERROR");
+        error.addHeader("message", messageHeader);
+        if (causingMessage != null && causingMessage.getHeaders().containsKey("receipt")) {
+            error.addHeader("receipt-id", causingMessage.getHeaders().get("receipt"));
+        }
+        error.setBody("The connection will be closed.\n" + bodyDetail);
+        connections.send(connectionId, error);
+        
+        if (currentUser != null) {
+            userController.logout(currentUser);
+        }
+        shouldTerminate = true;
+        connections.disconnect(connectionId);
     }
 }

@@ -24,7 +24,7 @@ public class BlockingConnectionHandler<T> implements Runnable, ConnectionHandler
 
     @Override
     public void run() {
-        try (Socket sock = this.sock) { //just for automatic closing
+        try (Socket sock = this.sock) { 
             int read;
 
             in = new BufferedInputStream(sock.getInputStream());
@@ -44,7 +44,6 @@ public class BlockingConnectionHandler<T> implements Runnable, ConnectionHandler
         } catch (IOException ex) {
             ex.printStackTrace();
         }
-
     }
 
     @Override
@@ -55,6 +54,23 @@ public class BlockingConnectionHandler<T> implements Runnable, ConnectionHandler
 
     @Override
     public void send(T msg) {
-        //IMPLEMENT IF NEEDED
+        // מימוש השליחה כדי שהשרת יוכל להחזיר תשובה ללקוח
+        if (msg != null) {
+            try {
+                // סנכרון בסיסי כדי למנוע התנגשויות כתיבה
+                synchronized (this) {
+                    if (out != null) {
+                        out.write(encdec.encode(msg));
+                        out.flush();
+                    }
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    public MessagingProtocol<T> getProtocol() {
+        return protocol;
     }
 }

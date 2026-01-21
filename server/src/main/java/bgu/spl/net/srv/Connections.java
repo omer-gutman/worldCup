@@ -10,10 +10,11 @@ public interface Connections<T> {
 
     void disconnect(int connectionId);
 
-    //הפונקציות החדשות כדי שהפרוטוקל שלנו יוכל להשתמש בהם בלי castings מיותרים
+    // הוספת חיבור חדש (ייקרא ע"י השרת כשהלקוח מתחבר)
     void addConnection(int connectionId, ConnectionHandler<T> handler);
 
-    void subscribe(String channel, int connectionId);
+    // עדכון החתימה לקבלת subscriptionId
+    void subscribe(String channel, int connectionId, String subscriptionId);
 
     void unsubscribe(String channel, int connectionId);
 }
