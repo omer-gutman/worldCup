@@ -9,12 +9,14 @@ import java.util.concurrent.ConcurrentHashMap;
 public class Database {
 	private final ConcurrentHashMap<String, User> userMap;
 	private final ConcurrentHashMap<Integer, User> connectionsIdMap;
+	private final ConcurrentHashMap<String, ConcurrentHashMap<Integer, String>> channelSubscriptions;
 	private final String sqlHost;
 	private final int sqlPort;
 
 	private Database() {
 		userMap = new ConcurrentHashMap<>();
 		connectionsIdMap = new ConcurrentHashMap<>();
+		this.channelSubscriptions = new ConcurrentHashMap<>();
 		// SQL server connection details
 		this.sqlHost = "127.0.0.1";
 		this.sqlPort = 7778;
@@ -143,6 +145,9 @@ public class Database {
 			
 			user.logout();
 			connectionsIdMap.remove(connectionsId);
+
+			// NEW: Clean up their pub/sub subscriptions!
+            removeUserFromAllChannels(connectionsId);
 		}
 	}
 
@@ -236,18 +241,57 @@ public class Database {
 				System.out.println("   No files uploaded");
 			}
 		}
-		
-	System.out.println(repeat("=", 80));
-}
-
-private String repeat(String str, int times) {
-	StringBuilder sb = new StringBuilder();
-	for (int i = 0; i < times; i++) {
-		sb.append(str);
+		System.out.println(repeat("=", 80));
 	}
-	return sb.toString();
-}
 
-private static class Instance {
-	static Database instance = new Database();
-}}
+	private String repeat(String str, int times) {
+		StringBuilder sb = new StringBuilder();
+		for (int i = 0; i < times; i++) {
+			sb.append(str);
+		}
+		return sb.toString();
+	}
+
+	private static class Instance {
+		static Database instance = new Database();
+	}
+
+	/**
+     * Subscribes a user to a channel with their specific STOMP subscription ID.
+     */
+    public void subscribe(String channel, int connectionId, String subscriptionId) {
+        channelSubscriptions.putIfAbsent(channel, new ConcurrentHashMap<>());
+        channelSubscriptions.get(channel).put(connectionId, subscriptionId);
+    }
+
+    /**
+     * Unsubscribes a user from a specific channel.
+     */
+    public void unsubscribe(String channel, int connectionId) {
+        ConcurrentHashMap<Integer, String> subs = channelSubscriptions.get(channel);
+        if (subs != null) {
+            subs.remove(connectionId);
+            // Optional cleanup: remove the channel if it's empty
+            if (subs.isEmpty()) {
+                channelSubscriptions.remove(channel);
+            }
+        }
+    }
+
+    /**
+     * Gets all active subscribers and their specific subscription IDs for a channel.
+     * @return A map of ConnectionID -> SubscriptionID
+     */
+    public ConcurrentHashMap<Integer, String> getChannelSubscribers(String channel) {
+        return channelSubscriptions.getOrDefault(channel, new ConcurrentHashMap<>());
+    }
+
+    /**
+     * Cleans up all subscriptions for a user when they disconnect.
+     */
+    public void removeUserFromAllChannels(int connectionId) {
+        for (String channel : channelSubscriptions.keySet()) {
+            unsubscribe(channel, connectionId);
+        }
+    }
+}

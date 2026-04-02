@@ -4,77 +4,38 @@ import bgu.spl.net.api.MessageEncoderDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
-public class StompEncoderDecoder implements MessageEncoderDecoder<StompFrame> {
+public class StompEncoderDecoder implements MessageEncoderDecoder<String> {
 
-    private byte[] bytes = new byte[1024]; // להתחיל עם מערך של 1KB
-    private int len = 0; // עוקב אחרי האורך של המסגרת הנוכחית
+    private byte[] bytes = new byte[1 << 10]; // Start with 1k buffer
+    private int len = 0;
 
     @Override
-    public StompFrame decodeNextByte(byte nextByte) {
-        // בודק אם הגענו לסוף המסגרת (אם הבייט הוא null character)
+    public String decodeNextByte(byte nextByte) {
+        // STOMP frames end with the null character '\u0000' 
         if (nextByte == '\u0000') {
-            return popFrame(); // מחזיר את המסגרת המלאה
+            return popString();
         }
-        // אם לא הגענו לסוף, מוסיף את הבייט למערך
+
         pushByte(nextByte);
-        return null; // לעדכן את השרת שלא סיימנו עדיין
+        return null; // Not a complete frame yet
     }
 
     @Override
-    public byte[] encode(StompFrame message) {
-        // להפוך את המסגרת למחרוזת ולהוסיף את תו הסיום
-        //  משתמש בקידוד שיצרנוUTF-8 להמרה לבייטים
-        return (message.toString() + "\u0000").getBytes(StandardCharsets.UTF_8);
+    public byte[] encode(String message) {
+        // The protocol already appends the '\u0000' character to the end of the string
+        return message.getBytes(StandardCharsets.UTF_8);
     }
 
     private void pushByte(byte nextByte) {
-        // אם המסגרת מלאה , להגדיל את המערך (משתמש בדינמיות של מערכים)
         if (len >= bytes.length) {
             bytes = Arrays.copyOf(bytes, len * 2);
         }
         bytes[len++] = nextByte;
     }
 
-    private StompFrame popFrame() {
-        // 1. ממיר את הבתים שאספנו למחרוזת 
-        // מקבל כארגומנטים את המערך התחלה סוף וקידוד
-        String rawMessage = new String(bytes, 0, len, StandardCharsets.UTF_8);
-        len = 0; // נאתחל את האורך למסגרת הבאה
-        
-        // 2. נחזיר את המסגרת המפורסת
-        return parseMessage(rawMessage);
-    }
-
-    private StompFrame parseMessage(String msg) {
-        // פיצול המחרוזת לשורות לפי תו השורה החדשה
-        String[] lines = msg.split("\n");
-        if (lines.length == 0) return null;
-
-        // השורה הראשונה היא הפקודה
-        String command = lines[0].trim();
-        StompFrame frame = new StompFrame(command);
-
-        // לפרס את הכותרות
-        int i = 1;
-        // נמשיך לקרוא כותרות עד שנגיע לשורה ריקה
-        while (i < lines.length && !lines[i].isEmpty()) {
-            String[] headerParts = lines[i].split(":");
-            if (headerParts.length == 2) {
-                frame.addHeader(headerParts[0], headerParts[1]);
-            }
-            i++;
-        }
-
-        // הגוף הוא כל מה שנשאר אחרי השורה הריקה
-        StringBuilder body = new StringBuilder();
-        for (i = i + 1; i < lines.length; i++) {
-            body.append(lines[i]).append("\n");
-        }
-        
-        if (body.length() > 0) {
-            frame.setBody(body.toString().trim()); 
-        }
-
-        return frame;
+    private String popString() {
+        String result = new String(bytes, 0, len, StandardCharsets.UTF_8);
+        len = 0;
+        return result;
     }
 }

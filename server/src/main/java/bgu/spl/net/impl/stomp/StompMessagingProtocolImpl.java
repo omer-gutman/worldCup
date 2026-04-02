@@ -2,62 +2,71 @@ package bgu.spl.net.impl.stomp;
 
 import bgu.spl.net.api.StompMessagingProtocol;
 import bgu.spl.net.srv.Connections;
+import bgu.spl.net.impl.data.Database;
+import bgu.spl.net.impl.data.LoginStatus;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
-public class StompMessagingProtocolImpl implements StompMessagingProtocol<StompFrame> {
+public class StompMessagingProtocolImpl implements StompMessagingProtocol<String> {
 
     private int connectionId;
-    private Connections<StompFrame> connections;
+    private Connections<String> connections;
     private boolean shouldTerminate = false;
-    private UserController userController;
-    private String currentUser = null; 
     
-    private Map<String, String> subscriptionIdToChannel = new HashMap<>();
+    // Identifies who is logged into this specific connection
+    private String loggedInUser = null; 
+    
+    // Maps this client's local Subscription IDs to Channel Names
+    private final Map<String, String> subIdToChannel = new HashMap<>();
 
-    public StompMessagingProtocolImpl(Connections<StompFrame> connections, UserController userController) {
-        this.connections = connections;
-        this.userController = userController;
+    // Global state singleton
+    private final Database database; 
+    
+    // Generates server-unique message IDs across all threads
+    private static final AtomicInteger messageIdCounter = new AtomicInteger(1);
+
+    public StompMessagingProtocolImpl() {
+        this.database = Database.getInstance(); // Grab the singleton
     }
 
     @Override
-    public void start(int connectionId, Connections<StompFrame> connections) {
+    public void start(int connectionId, Connections<String> connections) {
         this.connectionId = connectionId;
         this.connections = connections;
     }
 
     @Override
-    public StompFrame process(StompFrame message) {
-        String command = message.getCommand();
-
-        if (currentUser == null && !command.equals("CONNECT")) {
-            sendErrorAndClose("User not logged in", "You must log in first.", message);
-            return null;
+    public void process(String message) {
+        StompFrame frame = StompFrame.parse(message); 
+        
+        // Ensure user is logged in before processing other commands
+        if (loggedInUser == null && !frame.getCommand().equals("CONNECT")) {
+            sendError("Not logged in", "You must log in before sending commands.", frame);
+            return;
         }
 
-        switch (command) {
+        switch (frame.getCommand()) {
             case "CONNECT":
-                handleConnect(message);
+                handleConnect(frame);
                 break;
             case "SUBSCRIBE":
-                handleSubscribe(message);
+                handleSubscribe(frame);
                 break;
             case "UNSUBSCRIBE":
-                handleUnsubscribe(message);
+                handleUnsubscribe(frame);
                 break;
             case "SEND":
-                handleSend(message);
+                handleSend(frame);
                 break;
             case "DISCONNECT":
-                handleDisconnect(message);
+                handleDisconnect(frame);
                 break;
             default:
-                sendErrorAndClose("Unknown Command", "The command " + command + " is not recognized.", message);
+                sendError("Unknown command", "The server did not recognize the STOMP command.", frame);
                 break;
         }
-        
-        // אנחנו מחזירים null כי התשובות נשלחות ישירות דרך ה-connections ולא דרך מנגנון החזרה של ה-Handler
-        return null;
     }
 
     @Override
@@ -65,137 +74,156 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<StompF
         return shouldTerminate;
     }
 
-    // --- Private Handler Methods ---
+    // --- STOMP Command Handlers ---
 
-    private void handleConnect(StompFrame message) {
-        String login = message.getHeaders().get("login");
-        String passcode = message.getHeaders().get("passcode");
+    private void handleConnect(StompFrame frame) {
+        String version = frame.getHeader("accept-version");
+        String host = frame.getHeader("host");
+        String login = frame.getHeader("login");
+        String passcode = frame.getHeader("passcode");
 
-        if (login == null || passcode == null) {
-            sendErrorAndClose("Malformed Frame", "Login and passcode headers are required", message);
+        if (version == null || host == null || login == null || passcode == null) {
+            sendError("Malformed frame", "CONNECT frame is missing headers.", frame);
             return;
         }
 
-        if (currentUser != null) {
-            sendErrorAndClose("User already logged in", "Client is already logged in as " + currentUser, message);
+        if (loggedInUser != null) {
+            sendError("Already logged in", "The client is already logged in.", frame);
             return;
         }
 
-        synchronized (userController) {
-            if (userController.isLoggedIn(login)) {
-                sendErrorAndClose("User already logged in", "User " + login + " is already active on another client.", message);
-                return;
-            }
+        // Use Database to verify credentials
+        LoginStatus status = database.login(connectionId, login, passcode);
 
-            if (!userController.isUserRegistered(login)) {
-                userController.register(login, passcode);
-            } else {
-                if (!userController.isValidLogin(login, passcode)) {
-                    sendErrorAndClose("Wrong password", "Password does not match.", message);
-                    return;
-                }
-            }
-            
-            userController.login(login);
+        if (status == LoginStatus.LOGGED_IN_SUCCESSFULLY || status == LoginStatus.ADDED_NEW_USER) {
+            loggedInUser = login;
+            String response = "CONNECTED\nversion:1.2\n\n\u0000"; 
+            connections.send(connectionId, response);
+        } else if (status == LoginStatus.WRONG_PASSWORD) {
+            sendError("Wrong password", "The password provided is incorrect.", frame); 
+        } else if (status == LoginStatus.ALREADY_LOGGED_IN) {
+            sendError("User already logged in", "This user has an active session elsewhere.", frame); 
         }
-
-        this.currentUser = login;
-
-        StompFrame connected = new StompFrame("CONNECTED");
-        connected.addHeader("version", "1.2");
-        connections.send(connectionId, connected);
     }
 
-    private void handleSubscribe(StompFrame message) {
-        String destination = message.getHeaders().get("destination");
-        String id = message.getHeaders().get("id");
+    private void handleSubscribe(StompFrame frame) {
+        String destination = frame.getHeader("destination");
+        String id = frame.getHeader("id");
 
         if (destination == null || id == null) {
-            sendErrorAndClose("Malformed Frame", "SUBSCRIBE requires 'destination' and 'id' headers.", message);
+            sendError("Malformed frame", "SUBSCRIBE frame is missing destination or id.", frame);
             return;
         }
 
-        subscriptionIdToChannel.put(id, destination);
-        connections.subscribe(destination, connectionId, id);
-
-        if (message.getHeaders().containsKey("receipt")) {
-            sendReceipt(message.getHeaders().get("receipt"));
-        }
+        // Save mapping locally and globally
+        subIdToChannel.put(id, destination);
+        database.subscribe(destination, connectionId, id);
+        
+        sendReceiptIfNeeded(frame);
     }
 
-    private void handleUnsubscribe(StompFrame message) {
-        String id = message.getHeaders().get("id");
+    private void handleUnsubscribe(StompFrame frame) {
+        String id = frame.getHeader("id");
+
         if (id == null) {
-            sendErrorAndClose("Malformed Frame", "UNSUBSCRIBE requires 'id' header.", message);
+            sendError("Malformed frame", "UNSUBSCRIBE missing id header.", frame);
             return;
         }
 
-        String destination = subscriptionIdToChannel.remove(id);
-        if (destination != null) {
-            connections.unsubscribe(destination, connectionId);
+        String channel = subIdToChannel.remove(id);
+        if (channel != null) {
+            database.unsubscribe(channel, connectionId);
+        } else {
+            sendError("Invalid subscription", "No active subscription found for id " + id, frame);
+            return;
         }
-
-        if (message.getHeaders().containsKey("receipt")) {
-            sendReceipt(message.getHeaders().get("receipt"));
-        }
+        
+        sendReceiptIfNeeded(frame);
     }
 
-    private void handleSend(StompFrame message) {
-        String destination = message.getHeaders().get("destination");
+    private void handleSend(StompFrame frame) {
+        String destination = frame.getHeader("destination");
+        String body = frame.getBody();
+
         if (destination == null) {
-            sendErrorAndClose("Malformed Frame", "SEND requires 'destination' header.", message);
+            sendError("Malformed frame", "SEND missing destination header.", frame);
             return;
         }
 
-        if (!subscriptionIdToChannel.containsValue(destination)) {
-            sendErrorAndClose("Not Subscribed", "You cannot send messages to a channel you are not subscribed to.", message);
+        // Check if the sender is actually subscribed to this channel [cite: 140]
+        if (!database.getChannelSubscribers(destination).containsKey(connectionId)) {
+            sendError("Not subscribed", "You cannot send messages to a topic you are not subscribed to.", frame);
             return;
         }
 
-        StompFrame msgToSend = new StompFrame("MESSAGE");
-        msgToSend.addHeader("destination", destination);
-        msgToSend.addHeader("message-id", "msg-" + System.currentTimeMillis()); 
-        msgToSend.setBody(message.getBody());
-
-        connections.send(destination, msgToSend);
-
-        if (message.getHeaders().containsKey("receipt")) {
-            sendReceipt(message.getHeaders().get("receipt"));
+        // Track file uploads in SQL based on assignment instructions [cite: 275]
+        if (body.contains("event name")) { // Basic check for a report file body
+            database.trackFileUpload(loggedInUser, "report_data", destination);
         }
+
+        // Broadcast to all subscribers of this destination
+        ConcurrentHashMap<Integer, String> subscribers = database.getChannelSubscribers(destination);
+        int msgId = messageIdCounter.getAndIncrement();
+
+        for (Map.Entry<Integer, String> entry : subscribers.entrySet()) {
+            int subConnectionId = entry.getKey();
+            String subId = entry.getValue();
+
+            // Construct unique MESSAGE frame per user [cite: 89-93]
+            String messageFrame = 
+                "MESSAGE\n" +
+                "subscription:" + subId + "\n" +
+                "message-id:" + msgId + "\n" +
+                "destination:" + destination + "\n" +
+                "\n" + body + "\n\u0000";
+
+            connections.send(subConnectionId, messageFrame);
+        }
+        
+        sendReceiptIfNeeded(frame);
     }
 
-    private void handleDisconnect(StompFrame message) {
-        if (message.getHeaders().containsKey("receipt")) {
-            sendReceipt(message.getHeaders().get("receipt"));
+    private void handleDisconnect(StompFrame frame) {
+        String receiptId = frame.getHeader("receipt");
+        
+        if (receiptId != null) {
+            sendReceiptIfNeeded(frame);
         }
         
-        if (currentUser != null) {
-            userController.logout(currentUser);
+        // Log out cleanly
+        if (loggedInUser != null) {
+            database.logout(connectionId);
         }
         
-        shouldTerminate = true;
         connections.disconnect(connectionId);
+        shouldTerminate = true; 
     }
 
-    private void sendReceipt(String receiptId) {
-        StompFrame receipt = new StompFrame("RECEIPT");
-        receipt.addHeader("receipt-id", receiptId);
-        connections.send(connectionId, receipt);
-    }
+    // --- Helper Methods ---
 
-    private void sendErrorAndClose(String messageHeader, String bodyDetail, StompFrame causingMessage) {
-        StompFrame error = new StompFrame("ERROR");
-        error.addHeader("message", messageHeader);
-        if (causingMessage != null && causingMessage.getHeaders().containsKey("receipt")) {
-            error.addHeader("receipt-id", causingMessage.getHeaders().get("receipt"));
+    private void sendReceiptIfNeeded(StompFrame frame) {
+        String receiptId = frame.getHeader("receipt");
+        if (receiptId != null) {
+            String response = "RECEIPT\nreceipt-id:" + receiptId + "\n\n\u0000";
+            connections.send(connectionId, response);
         }
-        error.setBody("The connection will be closed.\n" + bodyDetail);
-        connections.send(connectionId, error);
+    }
+
+    private void sendError(String messageHeader, String body, StompFrame causeFrame) {
+        StringBuilder errorMsg = new StringBuilder();
+        errorMsg.append("ERROR\n");
         
-        if (currentUser != null) {
-            userController.logout(currentUser);
+        String receiptId = causeFrame.getHeader("receipt");
+        if (receiptId != null) {
+            errorMsg.append("receipt-id:").append(receiptId).append("\n");
         }
-        shouldTerminate = true;
+        
+        errorMsg.append("message:").append(messageHeader).append("\n\n");
+        errorMsg.append(body).append("\n-----\n");
+        errorMsg.append(causeFrame.toString()).append("\n\u0000"); 
+
+        connections.send(connectionId, errorMsg.toString());
         connections.disconnect(connectionId);
+        shouldTerminate = true;
     }
 }
