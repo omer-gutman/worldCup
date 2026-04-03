@@ -55,13 +55,13 @@ void sendJoin(ConnectionHandler* handler, const std::string& destination) {
         receiptMap[rId] = "Joined channel " + destination;
         channelToSubId[destination] = sId;
     }
-    std::string frame = "SUBSCRIBE\ndestination:" + destination + "\nid:" + std::to_string(sId) + "\nreceipt:" + std::to_string(rId) + "\nack:client-individual\n\n";//the frame
+    std::string frame = "SUBSCRIBE\ndestination:/" + destination + "\nid:" + std::to_string(sId) + "\nreceipt:" + std::to_string(rId) + "\nack:client-individual\n\n";//the frame
     handler->sendFrameAscii(frame, '\0');
 }
 
 //sends a send frame with message body
 void sendMsg(ConnectionHandler* handler, const std::string& destination, const std::string& message) {
-    std::string frame = "SEND\ndestination:" + destination + "\n\n" + message;
+    std::string frame = "SEND\ndestination:/" + destination + "\n\n" + message;
     handler->sendFrameAscii(frame, '\0');
 }
 //sends an unsubscribe frame
