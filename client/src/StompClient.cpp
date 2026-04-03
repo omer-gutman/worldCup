@@ -38,7 +38,7 @@ struct GameUpdates {
 	//Event list
     std::vector<EventReport> events; 
 };
-std::string activeUser = ""
+std::string activeUser = "";
 std::mutex memoryMutex;
 std::map<std::string, std::map<std::string, GameUpdates>> memoryStorage;
 //stomp proctocl functions used to build the frames properly and refactor the code
@@ -367,7 +367,7 @@ int main(int argc, char *argv[]) {
 			                frame += "team a: " + nne.team_a_name + "\n";
 			                frame += "team b: " + nne.team_b_name + "\n";
 			                frame += "event name: " + ev.get_name() + "\n";
-			                frame += "time: " + std::to_string(ev.get_time()) + "\n"      
+			                frame += "time: " + std::to_string(ev.get_time()) + "\n";  
 			                // Concatenate the general stats that changed specifically in this event (from the JSON)
 			                frame += "general game updates:\n";
 			                for (const auto& pair : ev.get_game_updates()) {
