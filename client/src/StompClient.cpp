@@ -256,18 +256,31 @@ void readFromCin() {//reading in a non blocking way
 }
 
 int main(int argc, char *argv[]) {
+	std::thread inputThread(readFromCin);
+    inputThread.detach();
 	ConnectionHandler* handler = nullptr;
-    while (true) {
+    while (!shouldTerminate) {
         std::string line;
-        if (!std::getline(std::cin, line)) return 0; // getting user input
-        std::stringstream ss(line);
-        std::string command;
-        ss >> command; // extracting the first word
+		{
+            std::lock_guard<std::mutex> lock(inputMutex);
+            if (!inputQueue.empty()) {
+                line = inputQueue.front();
+                inputQueue.pop();
+            }
+        }
+        if (!line.empty()) {
+            std::stringstream ss(line);
+            std::string command;
+            ss >> command; // extracting the first word
 
         if (command == "login") {
-            std::string address, username, password;
-			if (!(ss >> address >> username >> password)) {// extracting the rest
-                std::cout << "Error: Missing login arguments" << std::endl;
+			if (isLoggedIn || handler != nullptr) {
+                    std::cout << "The client is already logged in, log out before trying again" << std::endl;
+                    continue;
+            }
+			std::string address, username, password;
+            if (!(ss >> address >> username >> password)) {
+            	std::cout << "Error: Missing login arguments" << std::endl;
                 continue;
             }
 			size_t pos = address.find(":"); // searching for : in the string
@@ -295,11 +308,10 @@ int main(int argc, char *argv[]) {
                 if (response.find("CONNECTED") != std::string::npos) {
                     std::cout << "Login successful" << std::endl;
 					activeUser = username;
+					isLoggedIn = true;
+					channelToSubId.clear();
 					std::thread listenerThread(runListener, handler); // starting the listener thread
 					listenerThread.detach(); // running on his own
-					std::thread inputThread(readFromCin);
-    				inputThread.detach();
-                    break; // exiting the loop the user connected succssesfully
                 } else {
                     // couldn't connect
                     std::cout << "Login failed: " << response << std::endl;
@@ -308,45 +320,26 @@ int main(int argc, char *argv[]) {
                     handler = nullptr;
                 }
             }
-        } else {
-            std::cout << "You must login first" << std::endl;
-        }
-    }
-	//the engine syncing 3 threads, running STOMP protocol, state managment and dealing with blocking I/Os
-	while (!shouldTerminate) {//after successfully login in 
-        std::string line = "";
-		//checking for message in queue
-		{
-            std::lock_guard<std::mutex> lock(inputMutex);
-            if (!inputQueue.empty()) {
-                line = inputQueue.front();
-                inputQueue.pop();
+            else if (!isLoggedIn) {
+                std::cout << "You must login first" << std::endl;
             }
-        }
-        if (!line.empty()){
-			std::stringstream ss(line);
-			std::string command;
-			ss >> command;
-			if (command == "logout") {
-            sendDisconnect(handler);
-			} 
-			else if (command == "join") {
-				std::string destination;
-				if (ss >> destination) {
-					sendJoin(handler, destination); 
-				}
-			}
+            else if (command == "logout") {
+				sendDisconnect(handler);
+            } 
+            else if (command == "join") {
+                std::string destination;
+                if (ss >> destination) {
+                    sendJoin(handler, destination); 
+                }
+            }
 			else if (command == "report") {
-			    std::string file_name;
+                std::string file_name;
 			    // Extract the file name from the user's command
-			    if (ss >> file_name) {
-			        try {
-			            // Read the JSON file using the provided function (from event.h) and get the data object
-			            names_and_events nne = parseEventsFile(file_name);
-			            // Construct the channel name by concatenating the two team names
-			            std::string game_name = nne.team_a_name + "_" + nne.team_b_name;			
-			            // Loop through each event returned from the parsed file
-			            for (const auto& ev : nne.events) {
+                if (ss >> file_name) {
+                    try {
+                        names_and_events nne = parseEventsFile(file_name);
+                        std::string game_name = nne.team_a_name + "_" + nne.team_b_name;            
+                        for (const auto& ev : nne.events) {
 			                //Save the event in the client's local memory
 			                {
 			                    // Prevent race conditions if the listener thread tries to write at the same time
@@ -463,8 +456,11 @@ int main(int argc, char *argv[]) {
 			            
 			            // Sorting events by time
 			            std::sort(sortedEvents.begin(), sortedEvents.end(), [](const EventReport& a, const EventReport& b) {
-			                return a.time < b.time;
-			            });
+                            if (a.beforeHalftime != b.beforeHalftime) {
+                                return a.beforeHalftime; 
+                            }
+                            return a.time < b.time;
+                        });
 			            
 			            // Printing sorted events
 			            for (const auto& ev : sortedEvents) {
@@ -481,6 +477,11 @@ int main(int argc, char *argv[]) {
 			    }
 			}
 		}
+		if (handler != nullptr && !isLoggedIn) {
+            handler->close();
+            delete handler;
+            handler = nullptr;
+        }
 		std::this_thread::sleep_for(std::chrono::milliseconds(10)); //lowering the cpu usage
     }
 
