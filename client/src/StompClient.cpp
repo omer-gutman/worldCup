@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono> //short break to lower the cpu usage
 #include "ConnectionHandler.h"
+#include "event.h"
 
 //inorder to sync everything all of these global vars were used - thread safe
 std::atomic<bool> shouldTerminate(false);// flag
@@ -37,6 +38,7 @@ struct GameUpdates {
 	//Event list
     std::vector<EventReport> events; 
 };
+std::string activeUser = ""
 std::mutex memoryMutex;
 std::map<std::string, std::map<std::string, GameUpdates>> memoryStorage;
 //stomp proctocl functions used to build the frames properly and refactor the code
@@ -70,6 +72,7 @@ void sendUnsubscribe(ConnectionHandler* handler, int subId, const std::string& d
     }
     std::string frame = "UNSUBSCRIBE\nid:" + std::to_string(subId) + "\nreceipt:" + std::to_string(rId) + "\n\n";
     handler->sendFrameAscii(frame, '\0');
+}
 
 // sends a disconnect frame and requests a receipt to confirm safe closure
 void sendDisconnect(ConnectionHandler* handler) {
@@ -280,7 +283,7 @@ int main(int argc, char *argv[]) {
             if (handler->getFrameAscii(response, '\0')) {
                 if (response.find("CONNECTED") != std::string::npos) {
                     std::cout << "Login successful" << std::endl;
-
+					activeUser = username;
 					std::thread listenerThread(runListener, handler); // starting the listener thread
 					listenerThread.detach(); // running on his own
 					std::thread inputThread(readFromCin);
@@ -322,17 +325,74 @@ int main(int argc, char *argv[]) {
 					sendJoin(handler, destination); 
 				}
 			}
-			else if (command == "send") {
-				std::string destination;
-				ss >> destination; //extract the destination
-				
-				std::string message;
-				std::getline(ss, message); // the rest of the message
-				if (!message.empty() && message[0] == ' ') message.erase(0, 1); //deletes the space at the beginning
-				
-				std::string sendFrame = "SEND\ndestination:" + destination + "\n\n" + message;//creating the new frame
-
-				handler->sendFrameAscii(sendFrame, '\0');//send to the server
+			else if (command == "report") {
+			    std::string file_name;
+			    // Extract the file name from the user's command
+			    if (ss >> file_name) {
+			        try {
+			            // Read the JSON file using the provided function (from event.h) and get the data object
+			            names_and_events nne = parseEventsFile(file_name);
+			            // Construct the channel name by concatenating the two team names
+			            std::string game_name = nne.team_a_name + "_" + nne.team_b_name;			
+			            // Loop through each event returned from the parsed file
+			            for (const auto& ev : nne.events) {
+			                //Save the event in the client's local memory
+			                {
+			                    // Prevent race conditions if the listener thread tries to write at the same time
+			                    std::lock_guard<std::mutex> lock(memoryMutex);
+			                    // Retrieve the specific game and user from the memory dictionary
+			                    GameUpdates& data = memoryStorage[game_name][activeUser];
+			                    data.teamA = nne.team_a_name; // Save team A's name
+			                    data.teamB = nne.team_b_name; // Save team B's name
+			                    // Add general updates to the accumulative dictionary
+			                    for (const auto& pair : ev.get_game_updates()) {
+			                        data.generalStats[pair.first] = pair.second;
+			                    }
+			                    // Add team A's updates to its dictionary
+			                    for (const auto& pair : ev.get_team_a_updates()) {
+			                        data.teamAStats[pair.first] = pair.second;
+			                    }
+			                    // Add team B's updates to its dictionary
+			                    for (const auto& pair : ev.get_team_b_updates()) {
+			                        data.teamBStats[pair.first] = pair.second;
+			                    }
+			                    // Create a small record that only saves the event details
+			                    EventReport newReport = {ev.get_time(), ev.get_name(), ev.get_discription()};
+			                    data.events.push_back(newReport); // Add the record to the game's event list
+			                }
+			                // Start the message
+			                std::string frame = "SEND\ndestination:/" + game_name + "\n\n";
+			                // Add the event information
+			                frame += "user: " + activeUser + "\n";
+			                frame += "team a: " + nne.team_a_name + "\n";
+			                frame += "team b: " + nne.team_b_name + "\n";
+			                frame += "event name: " + ev.get_name() + "\n";
+			                frame += "time: " + std::to_string(ev.get_time()) + "\n"      
+			                // Concatenate the general stats that changed specifically in this event (from the JSON)
+			                frame += "general game updates:\n";
+			                for (const auto& pair : ev.get_game_updates()) {
+			                    frame += pair.first + ": " + pair.second + "\n";
+			                }
+			                // Concatenate team A's stats
+			                frame += "team a updates:\n";
+			                for (const auto& pair : ev.get_team_a_updates()) {
+			                    frame += pair.first + ": " + pair.second + "\n";
+			                }
+			                // Concatenate team B's stats
+			                frame += "team b updates:\n";
+			                for (const auto& pair : ev.get_team_b_updates()) {
+			                    frame += pair.first + ": " + pair.second + "\n";
+			                }
+			                // Concatenate the event's description (always comes last)
+			                frame += "description:\n" + ev.get_discription() + "\n";
+			                // Send the ready Frame to the server
+			                handler->sendFrameAscii(frame, '\0');
+			            }
+			        } catch (const std::exception& e) {
+			            // In case the file doesn't exist, is invalid, or parsing fails
+			            std::cout << "Error parsing file: " << e.what() << std::endl;
+			        }
+			    }
 			}
 			else if (command == "exit") { 
 				std::string destination;
