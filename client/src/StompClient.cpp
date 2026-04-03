@@ -19,7 +19,24 @@ std::queue<std::string> inputQueue;//to prevent thread being blocked by input
 std::mutex inputMutex;//locking the queue
 int receiptCounter = 0;
 int subscriptionIdCounter = 0;
-
+//Single event
+struct EventReport {
+    int time;
+    std::string eventName;
+    std::string description;
+};
+//Game report
+struct GameUpdates {
+    std::string teamA;
+    std::string teamB;
+    std::map<std::string, std::string> generalStats;
+    std::map<std::string, std::string> teamAStats;
+    std::map<std::string, std::string> teamBStats;
+	//Event list
+    std::vector<EventReport> events; 
+};
+std::mutex memoryMutex;
+std::map<std::string, std::map<std::string, GameUpdates>> memoryStorage;
 //stomp proctocl functions used to build the frames properly and refactor the code
 //sends a subscribe frame
 void sendJoin(ConnectionHandler* handler, const std::string& destination) {
@@ -96,16 +113,80 @@ void processMessage(const std::string& headersPart, const std::string& bodyPart,
             headers[line.substr(0, pos)] = line.substr(pos + 1);
         }
     }
-	// sends an ACK frame if the server provided an ack header
+    // sends an ACK frame if the server provided an ack header
     if (headers.count("ack")) {
         std::string ackFrame = "ACK\nid:" + headers["ack"] + "\n\n";
         handler->sendFrameAscii(ackFrame, '\0');
     }
-	//displays the message content to the user
+    //displays the message content to the user
     if (headers.count("destination")) {
         std::cout << "\n--- New Message from " << headers["destination"] << " ---" << std::endl;
         std::cout << bodyPart << std::endl;
         std::cout << "-----------------------------------" << std::endl;
+
+        // decrypt the message
+        std::string destination = headers["destination"];
+        // string cleaning
+        if (!destination.empty() && destination[0] == '/') {
+            destination = destination.substr(1);
+        }
+
+        std::string reportingUser, teamA, teamB, eventName, description;
+        int time = 0;
+        int currentUpdateSection = 0; // 0 = none, 1 = general, 2 = teamA, 3 = teamB
+        
+        std::stringstream bodyStream(bodyPart);
+        std::string bodyLine;
+        
+        // reading every line
+        while (std::getline(bodyStream, bodyLine)) {
+            if (bodyLine.empty()) continue;
+
+            size_t pos = bodyLine.find(':');
+            if (pos != std::string::npos) {
+                std::string key = bodyLine.substr(0, pos);
+                std::string value = bodyLine.substr(pos + 1);
+                
+                // clearing unwanted spaces
+                if (!value.empty() && value[0] == ' ') value.erase(0, 1);
+
+                if (key == "user") reportingUser = value;
+                else if (key == "team a") teamA = value;
+                else if (key == "team b") teamB = value;
+                else if (key == "event name") eventName = value;
+                else if (key == "time") time = std::stoi(value);
+                else if (key == "general game updates") currentUpdateSection = 1;
+                else if (key == "team a updates") currentUpdateSection = 2;
+                else if (key == "team b updates") currentUpdateSection = 3;
+                else if (key == "description") {
+                    // reading the rest of the lines
+                    std::string descLine;
+                    while (std::getline(bodyStream, descLine)) {
+                        if (descLine == "\0") break; 
+                        description += descLine + "\n";
+                    }
+                    break; // description is always the end of the message
+                }
+                else {
+                    // updated stats
+                    std::lock_guard<std::mutex> lock(memoryMutex);
+                    GameUpdates& gameData = memoryStorage[destination][reportingUser];
+                    gameData.teamA = teamA;
+                    gameData.teamB = teamB;
+                    
+                    if (currentUpdateSection == 1) gameData.generalStats[key] = value;
+                    else if (currentUpdateSection == 2) gameData.teamAStats[key] = value;
+                    else if (currentUpdateSection == 3) gameData.teamBStats[key] = value;
+                }
+            }
+        }
+
+        // saving the last update
+        EventReport newEvent = {time, eventName, description};
+        {
+            std::lock_guard<std::mutex> lock(memoryMutex);
+            memoryStorage[destination][reportingUser].events.push_back(newEvent);
+        }
     }
 }
 
