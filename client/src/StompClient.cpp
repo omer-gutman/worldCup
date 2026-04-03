@@ -15,6 +15,7 @@
 
 //inorder to sync everything all of these global vars were used - thread safe
 std::atomic<bool> shouldTerminate(false);// flag
+std::atomic<bool> isLoggedIn(false);//still the same session?
 std::mutex receiptMutex; // lock
 std::map<int, std::string> receiptMap;// log for all the receipts
 std::map<std::string, int> channelToSubId; //map channel id
@@ -27,6 +28,7 @@ struct EventReport {
     int time;
     std::string eventName;
     std::string description;
+	bool beforeHalftime;
 };
 //Game report
 struct GameUpdates {
@@ -98,7 +100,7 @@ void handleReceipt(const std::string& headersPart) {
             if (receiptMap.count(rId)) {
                 std::string action = receiptMap[rId];
                 std::cout << action << std::endl;
-                if (action == "DISCONNECT") shouldTerminate = true; //flags termination
+                if (action == "DISCONNECT") isLoggedIn = false; //flags termination
                 receiptMap.erase(rId);
             }
         }
@@ -186,21 +188,28 @@ void processMessage(const std::string& headersPart, const std::string& bodyPart,
             }
         }
 
-        // saving the last update
-        EventReport newEvent = {time, eventName, description};
+        // Half time flag
+        bool isBeforeHalftime = true; 
         {
             std::lock_guard<std::mutex> lock(memoryMutex);
-            memoryStorage[destination][reportingUser].events.push_back(newEvent);
+            GameUpdates& gameData = memoryStorage[destination][reportingUser];
+            if (gameData.generalStats.count("before halftime")) {
+                isBeforeHalftime = (gameData.generalStats["before halftime"] == "true");
+            }
+            // Saving the last update
+            EventReport newEvent = {time, eventName, description, isBeforeHalftime};
+            gameData.events.push_back(newEvent);
         }
     }
 }
 
 //parsing everyhing is it error or is it a receipt only the listener knows
 void runListener(ConnectionHandler* handler) {//the listener thread
-    while (!shouldTerminate) {
+    while (!shouldTerminate && isLoggedIn) {
         std::string response;
         if (!handler->getFrameAscii(response, '\0')) {
             std::cout << "Disconnected from server" << std::endl;
+			isLoggedIn = false;
             break; 
         }
 		size_t firstNewline = response.find('\n');//first time new line appears
@@ -228,7 +237,7 @@ void runListener(ConnectionHandler* handler) {//the listener thread
         }
 		else if (command == "ERROR") {
             std::cout << "Server Error: " << bodyPart << std::endl;
-			shouldTerminate = true;
+			isLoggedIn = false;
         }
     }
 }
@@ -240,6 +249,8 @@ void readFromCin() {//reading in a non blocking way
         if (std::getline(std::cin, line)) {
             std::lock_guard<std::mutex> lock(inputMutex);
             inputQueue.push(line);
+        } else {
+            shouldTerminate = true; 
         }
     }
 }
