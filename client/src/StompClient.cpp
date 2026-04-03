@@ -7,6 +7,8 @@
 #include <map>
 #include <mutex>
 #include <queue>
+#include <fstream>
+#include <algorithm>
 #include <chrono> //short break to lower the cpu usage
 #include "ConnectionHandler.h"
 
@@ -342,6 +344,70 @@ int main(int argc, char *argv[]) {
 						std::cout << "Error: Not subscribed to channel " << destination << std::endl;
 					}
 				}
+			}
+			else if (command == "summary") {
+			    std::string game_name, user, file_name;
+			    // extracting parm from the command
+			    if (ss >> game_name >> user >> file_name) {
+			        
+			        std::lock_guard<std::mutex> lock(memoryMutex);
+			        
+			        // Checking for existance
+			        if (memoryStorage.count(game_name) && memoryStorage[game_name].count(user)) {
+			            // pulling the data
+			            GameUpdates& data = memoryStorage[game_name][user];
+			            
+			            // Creating new file for writing or using existing one
+			            std::ofstream outfile(file_name);
+			            if (!outfile.is_open()) {
+			                std::cout << "Error: Could not open or create file " << file_name << std::endl;
+			                continue;
+			            }
+			            
+			            // Writing title
+			            outfile << data.teamA << " vs " << data.teamB << "\n";
+			            outfile << "Game stats:\n";
+			            
+			            outfile << "General stats:\n";
+			            for (const auto& pair : data.generalStats) {
+			                outfile << pair.first << ": " << pair.second << "\n";
+			            }
+			            
+			            // Stats team A
+			            outfile << data.teamA << " stats:\n";
+			            for (const auto& pair : data.teamAStats) {
+			                outfile << pair.first << ": " << pair.second << "\n";
+			            }
+			            
+			            // Stats team B
+			            outfile << data.teamB << " stats:\n";
+			            for (const auto& pair : data.teamBStats) {
+			                outfile << pair.first << ": " << pair.second << "\n";
+			            }
+			            
+			            outfile << "Game event reports:\n";
+			            
+			            // Copying the list of events
+			            std::vector<EventReport> sortedEvents = data.events;
+			            
+			            // Sorting events by time
+			            std::sort(sortedEvents.begin(), sortedEvents.end(), [](const EventReport& a, const EventReport& b) {
+			                return a.time < b.time;
+			            });
+			            
+			            // Printing sorted events
+			            for (const auto& ev : sortedEvents) {
+			                outfile << ev.time << " " << ev.eventName << ":\n\n";
+			                outfile << ev.description << "\n\n"; 
+			            }
+			            
+			            outfile.close();			            
+			        } else {
+			            std::cout << "No data found for game " << game_name << " reported by user " << user << std::endl;
+			        }
+			    } else {
+			        std::cout << "Error: Invalid summary command format. Usage: summary {game_name} {user} {file}" << std::endl;
+			    }
 			}
 		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(10)); //lowering the cpu usage
