@@ -29,7 +29,7 @@ void sendJoin(ConnectionHandler* handler, const std::string& destination) {
         std::lock_guard<std::mutex> lock(receiptMutex);
         rId = receiptCounter++;
         sId = subscriptionIdCounter++;
-        receiptMap[rId] = "Joined channel: " + destination;
+        receiptMap[rId] = "Joined channel " + destination;
         channelToSubId[destination] = sId;
     }
     std::string frame = "SUBSCRIBE\ndestination:" + destination + "\nid:" + std::to_string(sId) + "\nreceipt:" + std::to_string(rId) + "\nack:client-individual\n\n";//the frame
@@ -42,10 +42,15 @@ void sendMsg(ConnectionHandler* handler, const std::string& destination, const s
     handler->sendFrameAscii(frame, '\0');
 }
 //sends an unsubscribe frame
-void sendUnsubscribe(ConnectionHandler* handler, int subId) {
-    std::string frame = "UNSUBSCRIBE\nid:" + std::to_string(subId) + "\n\n";
+void sendUnsubscribe(ConnectionHandler* handler, int subId, const std::string& destination) {
+    int rId;
+    {
+        std::lock_guard<std::mutex> lock(receiptMutex);
+        rId = receiptCounter++;
+        receiptMap[rId] = "Exited channel " + destination; 
+    }
+    std::string frame = "UNSUBSCRIBE\nid:" + std::to_string(subId) + "\nreceipt:" + std::to_string(rId) + "\n\n";
     handler->sendFrameAscii(frame, '\0');
-}
 
 // sends a disconnect frame and requests a receipt to confirm safe closure
 void sendDisconnect(ConnectionHandler* handler) {
@@ -70,7 +75,7 @@ void handleReceipt(const std::string& headersPart) {
             std::lock_guard<std::mutex> lock(receiptMutex);
             if (receiptMap.count(rId)) {
                 std::string action = receiptMap[rId];
-                std::cout << "Confirmed: " << action << std::endl;
+                std::cout << action << std::endl;
                 if (action == "DISCONNECT") shouldTerminate = true; //flags termination
                 receiptMap.erase(rId);
             }
@@ -250,8 +255,8 @@ int main(int argc, char *argv[]) {
 				std::string destination;
 				if (ss >> destination) {
 					if (channelToSubId.count(destination)) {//unsubscribes from a channel
-					sendUnsubscribe(handler, channelToSubId[destination]);
-					channelToSubId.erase(destination);//deletes from the map
+						sendUnsubscribe(handler, channelToSubId[destination], destination);
+            			channelToSubId.erase(destination);//deletes from the map
 					} else {
 						std::cout << "Error: Not subscribed to channel " << destination << std::endl;
 					}
