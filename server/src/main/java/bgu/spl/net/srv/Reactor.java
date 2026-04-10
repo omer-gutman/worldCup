@@ -1,6 +1,7 @@
 package bgu.spl.net.srv;
 
 import bgu.spl.net.api.MessageEncoderDecoder;
+import bgu.spl.net.api.MessagingProtocol; 
 import bgu.spl.net.api.StompMessagingProtocol; 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -16,7 +17,7 @@ import java.util.function.Supplier;
 public class Reactor<T> implements Server<T> {
 
     private final int port;
-    private final Supplier<StompMessagingProtocol<T>> protocolFactory; //מעודכן
+    private final Supplier<MessagingProtocol<T>> protocolFactory; 
     private final Supplier<MessageEncoderDecoder<T>> readerFactory;
     private final ActorThreadPool pool;
     private Selector selector;
@@ -31,7 +32,7 @@ public class Reactor<T> implements Server<T> {
     public Reactor(
             int numThreads,
             int port,
-            Supplier<StompMessagingProtocol<T>> protocolFactory, //מעודכן
+            Supplier<MessagingProtocol<T>> protocolFactory, //מעודכן
             Supplier<MessageEncoderDecoder<T>> readerFactory) {
 
         this.pool = new ActorThreadPool(numThreads);
@@ -79,7 +80,6 @@ public class Reactor<T> implements Server<T> {
         } catch (ClosedSelectorException ex) {
             //אם ביקשו שנסגור את השרת - לא לעשות כלום
         } catch (IOException ex) {
-            //להדפיס את השגיאה שנתפסה
             ex.printStackTrace();
         }
 
@@ -104,8 +104,9 @@ public class Reactor<T> implements Server<T> {
         clientChan.configureBlocking(false);
 
         int connectionId = connectionIdCounter.getAndIncrement();
-        StompMessagingProtocol<T> protocol = protocolFactory.get();
+        MessagingProtocol<T> protocol = protocolFactory.get(); 
         
+        //יצירת האנדלר עם הפרוטוקול הגנרי
         final NonBlockingConnectionHandler<T> handler = new NonBlockingConnectionHandler<>(
                 readerFactory.get(),
                 protocol,
@@ -114,16 +115,19 @@ public class Reactor<T> implements Server<T> {
                 
         connections.addConnection(connectionId, handler);
 
-        //זאת השורה שמבטיחה של start() יקרה לפני כל process()
+        // בדיקה אם הפרוטוקול הוא STOMP ואם כן, start
         pool.submit(handler, () -> {
-            protocol.start(connectionId, connections);
+            if (protocol instanceof StompMessagingProtocol) {
+                ((StompMessagingProtocol<T>) protocol).start(connectionId, connections);
+            }
             
-            //עכשיו אחרי start, אפשר לקרוא data
+            // פותחים ערוץ לקריאה רק אחרי start
             updateInterestedOps(clientChan, SelectionKey.OP_READ);
         });
-        
-        clientChan.register(selector, 0, handler); 
-    }
+    
+    // רישום ראשוני כדי למנוע קריאה לפני start
+    clientChan.register(selector, 0, handler); 
+}
 
     private void handleReadWrite(SelectionKey key) {
         @SuppressWarnings("unchecked")

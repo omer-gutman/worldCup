@@ -1,25 +1,46 @@
 package bgu.spl.net.srv;
 
+import java.io.IOException;
+import java.util.Collections;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArraySet;
 
+/**
+ * מימוש ממשק Connections
+ * מחזיק מיפוי של ID לHandler
+ * 
+ */
 public class ConnectionsImpl<T> implements Connections<T> {
 
-    // מיפוי: Connection ID -> ConnectionHandler
-    private final ConcurrentHashMap<Integer, ConnectionHandler<T>> activeConnections = new ConcurrentHashMap<>();
+    // מיפוי ID -> Handler
+    private final Map<Integer, ConnectionHandler<T>> activeConnections = new ConcurrentHashMap<>();
     
-    // מיפוי: Channel -> Set of connection IDs that subscribe to the channel
-    private final ConcurrentHashMap<String, Set<Integer>> channelSubscribers = new ConcurrentHashMap<>();
+    //מיפוי channel name -> List of users subrcribed
+    private final Map<String, Set<Integer>> channelSubscriptions = new ConcurrentHashMap<>();
 
-    //מיפוי הפוך: Connection ID -> Set of Channels its subscribed to
-    //מאפשר מחיקה ב-O(1) בזמן ניתוק
-    private final ConcurrentHashMap<Integer, Set<String>> clientChannels = new ConcurrentHashMap<>();
+
+    public void addConnection(int connectionId, ConnectionHandler<T> handler) {
+        activeConnections.put(connectionId, handler);
+    }
+
+    public void subscribe(String channel, int connectionId) {
+        channelSubscriptions.computeIfAbsent(channel, k -> new CopyOnWriteArraySet<>()).add(connectionId);
+    }
+
+    public void unsubscribe(String channel, int connectionId) {
+        Set<Integer> subscribers = channelSubscriptions.get(channel);
+        if (subscribers != null) {
+            subscribers.remove(connectionId);
+        }
+    }
 
     @Override
     public boolean send(int connectionId, T msg) {
         ConnectionHandler<T> handler = activeConnections.get(connectionId);
         if (handler != null) {
-            handler.send(msg);
+            handler.send(msg); 
             return true;
         }
         return false;
@@ -27,34 +48,28 @@ public class ConnectionsImpl<T> implements Connections<T> {
 
     @Override
     public void send(String channel, T msg) {
-        Set<Integer> subscribers = channelSubscribers.get(channel);
-        if (subscribers != null) {
-            for (Integer connectionId : subscribers) {
-                //שליחת הודעה בצורה כללית כדי שתתאים לכל פרוטוקול
-                //ספסיפיקציה תמומש בתוך מימוש STOMP
-                send(connectionId, msg); 
-            }
+        Set<Integer> subscribers = channelSubscriptions.getOrDefault(channel, Collections.emptySet());
+        for (Integer connectionId : subscribers) {
+            send(connectionId, msg);
         }
     }
 
     @Override
     public void disconnect(int connectionId) {
-        activeConnections.remove(connectionId);
         
-        // שליפת הרשימה מהמפה ההפוכה כדי לנתק לקוח ב-O(1)
-        Set<String> channels = clientChannels.remove(connectionId);
+        ConnectionHandler<T> handler = activeConnections.remove(connectionId);
         
-        if (channels != null) {
-            for (String channel : channels) {
-                Set<Integer> subscribers = channelSubscribers.get(channel);
-                if (subscribers != null) {
-                    subscribers.remove(connectionId);
-                }
+        if (handler != null) {
+            try {
+                handler.close();
+            } catch (IOException ignored) {
+                // שגיאה בסגירה לא אמורה לעצור את תהליך הניקוי
             }
         }
+
+        //ניקוי רישומים מכל הערוצים כדי למנוע דליפות זיכרון
+        for (Set<Integer> subscribers : channelSubscriptions.values()) {
+            subscribers.remove(connectionId);
+        }
     }
-    //מתודה עוזרת שנועדה להוסיף חיבור חדש לאוסף החיבורים
-    public void addConnection(int connectionId, ConnectionHandler<T> handler) {
-        activeConnections.put(connectionId, handler);
-    }   
 }

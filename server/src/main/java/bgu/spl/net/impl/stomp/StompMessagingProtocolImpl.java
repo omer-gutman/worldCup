@@ -15,20 +15,13 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
     private Connections<String> connections;
     private boolean shouldTerminate = false;
     
-    // Identifies who is logged into this specific connection
     private String loggedInUser = null; 
-    
-    // Maps this client's local Subscription IDs to Channel Names
     private final Map<String, String> subIdToChannel = new HashMap<>();
-
-    // Global state singleton
     private final Database database; 
-    
-    // Generates server-unique message IDs across all threads
     private static final AtomicInteger messageIdCounter = new AtomicInteger(1);
 
     public StompMessagingProtocolImpl() {
-        this.database = Database.getInstance(); // Grab the singleton
+        this.database = Database.getInstance();
     }
 
     @Override
@@ -37,16 +30,17 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
         this.connections = connections;
     }
 
+
     @Override
-    public void process(String message) {
+    public String process(String message) { //יושב על הפרוסס שהוספנו לסטומפ פרוטוקול
         StompFrame frame = StompFrame.parse(message); 
         
-        // Ensure user is logged in before processing other commands
+        // לוודא שהמשתמש מחובר לפני עיבוד ההודעה
         if (loggedInUser == null && !frame.getCommand().equals("CONNECT")) {
             sendError("Not logged in", "You must log in before sending commands.", frame);
-            return;
+            return null;
         }
-
+        
         switch (frame.getCommand()) {
             case "CONNECT":
                 handleConnect(frame);
@@ -67,6 +61,7 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
                 sendError("Unknown command", "The server did not recognize the STOMP command.", frame);
                 break;
         }
+        return null;
     }
 
     @Override
@@ -74,7 +69,7 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
         return shouldTerminate;
     }
 
-    // --- STOMP Command Handlers ---
+    //-----STOMP Command Handlers-----
 
     private void handleConnect(StompFrame frame) {
         String version = frame.getHeader("accept-version");
@@ -92,7 +87,7 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
             return;
         }
 
-        // Use Database to verify credentials
+        // נאמת את המשתמש (חדש/קיים/כבר מחובר/טעות בסיסמה)
         LoginStatus status = database.login(connectionId, login, passcode);
 
         if (status == LoginStatus.LOGGED_IN_SUCCESSFULLY || status == LoginStatus.ADDED_NEW_USER) {
@@ -115,7 +110,7 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
             return;
         }
 
-        // Save mapping locally and globally
+        // מיפוי מקומי ולבסיס הנתונים
         subIdToChannel.put(id, destination);
         database.subscribe(destination, connectionId, id);
         
@@ -150,18 +145,17 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
             return;
         }
 
-        // Check if the sender is actually subscribed to this channel [cite: 140]
+        // נוודא שהמשתמש רשום לערוץ שאליו הוא רוצה לשלוח
         if (!database.getChannelSubscribers(destination).containsKey(connectionId)) {
             sendError("Not subscribed", "You cannot send messages to a topic you are not subscribed to.", frame);
             return;
         }
 
-        // Track file uploads in SQL based on assignment instructions [cite: 275]
-        if (body.contains("event name")) { // Basic check for a report file body
+        if (body.contains("event name")) { // בדיקה שיש תוכן בהודעה
             database.trackFileUpload(loggedInUser, "report_data", destination);
         }
 
-        // Broadcast to all subscribers of this destination
+        // שידור לכל הרשומים לערוץ
         ConcurrentHashMap<Integer, String> subscribers = database.getChannelSubscribers(destination);
         int msgId = messageIdCounter.getAndIncrement();
 
@@ -169,7 +163,7 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
             int subConnectionId = entry.getKey();
             String subId = entry.getValue();
 
-            // Construct unique MESSAGE frame per user [cite: 89-93]
+            // בניית הודעה ייחודית לכל משתמש
             String messageFrame = 
                 "MESSAGE\n" +
                 "subscription:" + subId + "\n" +
@@ -190,7 +184,6 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
             sendReceiptIfNeeded(frame);
         }
         
-        // Log out cleanly
         if (loggedInUser != null) {
             database.logout(connectionId);
         }
@@ -199,8 +192,7 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
         shouldTerminate = true; 
     }
 
-    // --- Helper Methods ---
-
+    //-----Helper Methods------
     private void sendReceiptIfNeeded(StompFrame frame) {
         String receiptId = frame.getHeader("receipt");
         if (receiptId != null) {

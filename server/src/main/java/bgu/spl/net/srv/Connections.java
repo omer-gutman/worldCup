@@ -1,6 +1,5 @@
 package bgu.spl.net.srv;
 
-//ממשק חיבורים ע"פ ההגדרה
 public interface Connections<T> {
 
     boolean send(int connectionId, T msg);
