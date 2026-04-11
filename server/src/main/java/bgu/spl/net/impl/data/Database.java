@@ -78,10 +78,10 @@ public class Database {
 				"INSERT INTO users (username, password, registration_date) VALUES ('%s', '%s', datetime('now'))",
 				escapeSql(username), escapeSql(password)
 			);
-			executeSQL(sql);
+			//executeSQL(sql);
 			
 			// Log login
-			logLogin(username);
+			//logLogin(username);
 			return LoginStatus.ADDED_NEW_USER;
 		} else {
 			LoginStatus status = userExistsCase(connectionId, username, password);

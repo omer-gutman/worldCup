@@ -2,9 +2,13 @@ package bgu.spl.net.impl.stomp;
 
 import bgu.spl.net.api.StompMessagingProtocol;
 import bgu.spl.net.srv.Connections;
+import bgu.spl.net.srv.ConnectionsImpl;
 import bgu.spl.net.impl.data.Database;
 import bgu.spl.net.impl.data.LoginStatus;
+
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -20,6 +24,8 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
     private final Database database; 
     private static final AtomicInteger messageIdCounter = new AtomicInteger(1);
 
+    private static final List<String> VALID_COMMANDS = Arrays.asList("CONNECT", "SEND", "SUBSCRIBE", "UNSUBSCRIBE", "DISCONNECT");
+
     public StompMessagingProtocolImpl() {
         this.database = Database.getInstance();
     }
@@ -34,6 +40,10 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
     @Override
     public String process(String message) { //יושב על הפרוסס שהוספנו לסטומפ פרוטוקול
         StompFrame frame = StompFrame.parse(message); 
+        if (!(VALID_COMMANDS.contains(frame.getCommand()))) {
+            sendError("Invalid command", "You must use a valid command", frame);
+            return null;
+        }
         
         // לוודא שהמשתמש מחובר לפני עיבוד ההודעה
         if (loggedInUser == null && !frame.getCommand().equals("CONNECT")) {
@@ -92,7 +102,7 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
 
         if (status == LoginStatus.LOGGED_IN_SUCCESSFULLY || status == LoginStatus.ADDED_NEW_USER) {
             loggedInUser = login;
-            String response = "CONNECTED\nversion:1.2\n\n\u0000"; 
+            String response = "CONNECTED\nversion:1.5\n\n\u0000"; 
             connections.send(connectionId, response);
         } else if (status == LoginStatus.WRONG_PASSWORD) {
             sendError("Wrong password", "The password provided is incorrect.", frame); 
@@ -113,6 +123,9 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
         // מיפוי מקומי ולבסיס הנתונים
         subIdToChannel.put(id, destination);
         database.subscribe(destination, connectionId, id);
+
+        int subId = Integer.parseInt(id); // המרת ה-ID מההדר למספר
+        ((ConnectionsImpl<String>)connections).addSubscription(connectionId, subId, destination);
         
         sendReceiptIfNeeded(frame);
     }

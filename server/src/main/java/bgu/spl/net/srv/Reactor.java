@@ -87,13 +87,23 @@ public class Reactor<T> implements Server<T> {
         pool.shutdown();
     }
 
-    /*package*/ void updateInterestedOps(SocketChannel chan, int ops) { //package-private כי NonBlockingHandler בלבד צריך להכיר את המתודה הזאת
+    /*package*/ void updateInterestedOps(SocketChannel chan, int ops) {
         final SelectionKey key = chan.keyFor(selector);
+        
+        // הגנה ראשונה: אם המפתח כבר לא קיים או בוטל, אין מה לעדכן
+        if (key == null || !key.isValid()) {
+            return;
+        }
+
         if (Thread.currentThread() == selectorThread) {
             key.interestOps(ops);
         } else {
             selectorTasks.add(() -> {
-                key.interestOps(ops);
+                // הגנה שנייה: בדיקה חוזרת בתוך התור, כי המפתח יכול היה להתבטל
+                // בזמן שהמשימה חיכתה בתור לביצוע
+                if (key.isValid()) {
+                    key.interestOps(ops);
+                }
             });
             selector.wakeup();
         }

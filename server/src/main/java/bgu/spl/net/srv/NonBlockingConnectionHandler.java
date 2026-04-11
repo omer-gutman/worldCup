@@ -78,6 +78,9 @@ public class NonBlockingConnectionHandler<T> implements ConnectionHandler<T> {
     }
 
     public void continueWrite() {
+        // בדיקה שהערוץ בכלל פתוח לפני שמתחילים
+        if (!chan.isOpen()) return; 
+
         while (!writeQueue.isEmpty()) {
             try {
                 ByteBuffer top = writeQueue.peek();
@@ -88,14 +91,19 @@ public class NonBlockingConnectionHandler<T> implements ConnectionHandler<T> {
                     writeQueue.remove();
                 }
             } catch (IOException ex) {
-                ex.printStackTrace();
+                // אם הייתה שגיאה בכתיבה, סוגרים הכל ומפסיקים
                 close();
+                return; 
             }
         }
 
         if (writeQueue.isEmpty()) {
-            if (protocol.shouldTerminate()) close();
-            else reactor.updateInterestedOps(chan, SelectionKey.OP_READ);
+            if (protocol.shouldTerminate()) {
+                close();
+            } else {
+                // חשוב: אם אין יותר מה לכתוב, נחזור להקשיב רק לקריאה (READ)
+                reactor.updateInterestedOps(chan, SelectionKey.OP_READ);
+            }
         }
     }
 
