@@ -11,18 +11,18 @@ public class StompEncoderDecoder implements MessageEncoderDecoder<String> {
 
     @Override
     public String decodeNextByte(byte nextByte) {
-        // STOMP frames end with the null character '\u0000' 
+        // פריימים נגמרים בנאל בייט, אם מזהים אותו יש פריים שלם
         if (nextByte == '\u0000') {
             return popString();
         }
 
         pushByte(nextByte);
-        return null; // Not a complete frame yet
+        return null; // עוד לא פריים שלם
     }
 
     @Override
     public byte[] encode(String message) {
-        // The protocol already appends the '\u0000' character to the end of the string
+        // בStompFrame אנחנו כבר מוסיפים את הנאל בייט אז כששולחים כאן לא צריך להוסיף שוב
         return message.getBytes(StandardCharsets.UTF_8);
     }
 

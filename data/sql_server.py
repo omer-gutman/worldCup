@@ -11,7 +11,7 @@ the methods below.
 import socket
 import sys
 import threading
-
+import sqlite3;
 
 SERVER_NAME = "STOMP_PYTHON_SQL_SERVER"  # DO NOT CHANGE!
 DB_FILE = "stomp_server.db"              # DO NOT CHANGE!
@@ -30,16 +30,49 @@ def recv_null_terminated(sock: socket.socket) -> str:
 
 
 def init_database():
-    pass
+    """יוצר את טבלת המשתמשים אם היא לא קיימת"""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                password TEXT NOT NULL,
+                registration_date TEXT
+            )
+        ''')
+        conn.commit()
+    print(f"[{SERVER_NAME}] Database initialized.")
 
 
 def execute_sql_command(sql_command: str) -> str:
-    return "done"
+    """מריץ פקודות שלא מחזירות מידע כמו INSERT, UPDATE, DELETE"""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql_command)
+            conn.commit()
+        return "SUCCESS"
+    except Exception as e:
+        return f"error: {e}"
 
 
 def execute_sql_query(sql_query: str) -> str:
-    return "done"
-
+    """מריץ פקודות שמחזירות מידע כמו SELECT בפורמט מותאם למה שהגדרנו ב Java"""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql_query)
+            rows = cursor.fetchall()
+            
+            if not rows:
+                return "SUCCESS|" # מחזיר ריק אבל בפורמט תקין
+            
+            # בונה את המחרוזת: SUCCESS|(row1)|(row2)|(row3)
+            result = "SUCCESS|" + "|".join(str(row) for row in rows)
+            return result
+            
+    except Exception as e:
+        return f"ERROR: {e}"
 
 def handle_client(client_socket: socket.socket, addr):
     print(f"[{SERVER_NAME}] Client connected from {addr}")
@@ -53,7 +86,14 @@ def handle_client(client_socket: socket.socket, addr):
             print(f"[{SERVER_NAME}] Received:")
             print(message)
 
-            client_socket.sendall(b"done\0")
+            cmd = message.strip()
+            if cmd.upper().startswith("SELECT"):
+                result = execute_sql_query(cmd)
+            else:
+                result = execute_sql_command(cmd)
+            
+            # שולח בחזרה לג'אווה כולל ה-null terminator
+            client_socket.sendall(result.encode("utf-8", errors="replace") + b"\0")
 
     except Exception as e:
         print(f"[{SERVER_NAME}] Error handling client {addr}: {e}")
@@ -66,6 +106,7 @@ def handle_client(client_socket: socket.socket, addr):
 
 
 def start_server(host="127.0.0.1", port=7778):
+    init_database()
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 

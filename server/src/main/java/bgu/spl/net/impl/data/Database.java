@@ -78,10 +78,10 @@ public class Database {
 				"INSERT INTO users (username, password, registration_date) VALUES ('%s', '%s', datetime('now'))",
 				escapeSql(username), escapeSql(password)
 			);
-			//executeSQL(sql);
+			executeSQL(sql);
 			
 			// Log login
-			//logLogin(username);
+			logLogin(username);
 			return LoginStatus.ADDED_NEW_USER;
 		} else {
 			LoginStatus status = userExistsCase(connectionId, username, password);
@@ -256,17 +256,13 @@ public class Database {
 		static Database instance = new Database();
 	}
 
-	/**
-     * Subscribes a user to a channel with their specific STOMP subscription ID.
-     */
+	// רישום משתמש לערוץ לפי הSubID שלו
     public void subscribe(String channel, int connectionId, String subscriptionId) {
         channelSubscriptions.putIfAbsent(channel, new ConcurrentHashMap<>());
         channelSubscriptions.get(channel).put(connectionId, subscriptionId);
     }
 
-    /**
-     * Unsubscribes a user from a specific channel.
-     */
+    // הסרת רישום של משתמש מערוץ מסוים
     public void unsubscribe(String channel, int connectionId) {
         ConcurrentHashMap<Integer, String> subs = channelSubscriptions.get(channel);
         if (subs != null) {
@@ -278,17 +274,12 @@ public class Database {
         }
     }
 
-    /**
-     * Gets all active subscribers and their specific subscription IDs for a channel.
-     * @return A map of ConnectionID -> SubscriptionID
-     */
+    // מחזיר מפה של ID של משתמשים שמחוברים לערוץ מסוים -> לפי ה ID של הרישום שלהם
     public ConcurrentHashMap<Integer, String> getChannelSubscribers(String channel) {
         return channelSubscriptions.getOrDefault(channel, new ConcurrentHashMap<>());
     }
 
-    /**
-     * Cleans up all subscriptions for a user when they disconnect.
-     */
+    // לפי connection ID מסירים משתמש מכל הערוצים אליהם הוא רשום
     public void removeUserFromAllChannels(int connectionId) {
         for (String channel : channelSubscriptions.keySet()) {
             unsubscribe(channel, connectionId);

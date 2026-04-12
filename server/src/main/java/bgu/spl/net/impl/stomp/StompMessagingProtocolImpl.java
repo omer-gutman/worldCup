@@ -225,9 +225,15 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
         
         errorMsg.append("message:").append(messageHeader).append("\n\n");
         errorMsg.append(body).append("\n-----\n");
-        errorMsg.append(causeFrame.toString()).append("\n\u0000"); 
-
+        errorMsg.append(causeFrame.toString()).append("\n\u0000");
+        
         connections.send(connectionId, errorMsg.toString());
+
+        //חשוב לזכור לנתק את המשתמש מהשרת אם מעיפים אותו מרשימת המחוברים
+        if (loggedInUser != null) {
+            database.logout(connectionId);
+        }
+
         connections.disconnect(connectionId);
         shouldTerminate = true;
     }
