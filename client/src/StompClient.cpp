@@ -341,30 +341,7 @@ int main(int argc, char *argv[]) {
                     names_and_events nne = parseEventsFile(file_name);
                     std::string game_name = nne.team_a_name + "_" + nne.team_b_name;            
                     for (const auto& ev : nne.events) {
-                        //Save the event in the client's local memory
-                        {
-                            // Prevent race conditions if the listener thread tries to write at the same time
-                            std::lock_guard<std::mutex> lock(memoryMutex);
-                            // Retrieve the specific game and user from the memory dictionary
-                            GameUpdates& data = memoryStorage[game_name][activeUser];
-                            data.teamA = nne.team_a_name; // Save team A's name
-                            data.teamB = nne.team_b_name; // Save team B's name
-                            // Add general updates to the accumulative dictionary
-                            for (const auto& pair : ev.get_game_updates()) {
-                                data.generalStats[pair.first] = pair.second;
-                            }
-                            // Add team A's updates to its dictionary
-                            for (const auto& pair : ev.get_team_a_updates()) {
-                                data.teamAStats[pair.first] = pair.second;
-                            }
-                            // Add team B's updates to its dictionary
-                            for (const auto& pair : ev.get_team_b_updates()) {
-                                data.teamBStats[pair.first] = pair.second;
-                            }
-                            // Create a small record that only saves the event details
-                            EventReport newReport = {ev.get_time(), ev.get_name(), ev.get_discription()};
-                            data.events.push_back(newReport); // Add the record to the game's event list
-                        }
+                        
                         // Start the message
                         std::string frame = "SEND\ndestination:/" + game_name + "\n\n";
                         // Add the event information
